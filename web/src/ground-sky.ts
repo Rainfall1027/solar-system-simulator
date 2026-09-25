@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { eclipseSky, horizontalDirection, skyBackdrop, type EclipseSky, type GroundSite, type GroundTarget, type SkyPoint } from './eclipse-sky.ts';
+import { contactGlowSource, coronaVisibility, ECLIPSE_GLOW_SAMPLES, fillEclipseGlowSources } from './eclipse-optics.ts';
 
 // Eclipse sky view: the observer stands at a real site and looks at the real
 // topocentric Sun and Moon. Disc sizes and the Moon's offset are the true
@@ -12,7 +13,6 @@ import { eclipseSky, horizontalDirection, skyBackdrop, type EclipseSky, type Gro
 const SKY_RADIUS = 4000;
 const SUN_DISTANCE = 1000;
 const MOON_DISTANCE = 800;
-const CORONA_DISTANCE = 1100;
 const GLARE_DISTANCE = 1200;
 const STAR_DISTANCE = 3000;
 const MIN_FOV = 0.8;
@@ -110,9 +110,126 @@ const DISC_VERTEX = /* glsl */`
   }
 `;
 
+// A single linear-light composite for BOTH solar eclipse types. Analytic
+// spherical surfaces share one occultation boundary; optical bloom is applied
+// AFTER occultation so light can softly spill across the silhouette, rather
+// than being cut off by a foreground black circle. This is an illustrative HDR
+// photographic view, not a simulation of unaided-eye exposure or measured terrain.
+const SOLAR_ECLIPSE_FRAGMENT = /* glsl */`
+  uniform vec2 uMoonOffset;
+  uniform float uMoonRadius;
+  uniform float uCorona;
+  uniform float uCoverage;
+  uniform float uSunUp;
+  uniform sampler2D uMoonMap;
+  uniform sampler2D uMoonHeight;
+  uniform vec3 uGlowSources[${ECLIPSE_GLOW_SAMPLES}];
+  uniform vec3 uContactGlow;
+  varying vec2 vPoint;
+
+  float limbRadius(float a) {
+    return 1.0 + 0.00065 * sin(a * 37.0 + 0.7)
+      + 0.0004 * sin(a * 73.0 + 2.1) + 0.0002 * sin(a * 131.0 - 0.4);
+  }
+  float hash(vec3 p) { return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453); }
+  float noise(vec3 p) {
+    vec3 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
+    return mix(mix(mix(hash(i), hash(i + vec3(1,0,0)), f.x),
+      mix(hash(i + vec3(0,1,0)), hash(i + vec3(1,1,0)), f.x), f.y),
+      mix(mix(hash(i + vec3(0,0,1)), hash(i + vec3(1,0,1)), f.x),
+      mix(hash(i + vec3(0,1,1)), hash(i + vec3(1,1,1)), f.x), f.y), f.z);
+  }
+  void main() {
+    vec2 p = vPoint * 8.0;
+    float r = length(p);
+    float taper = 1.0 - smoothstep(5.2, 7.7, r);
+    if (taper <= 0.0) discard;
+    float pixel = max(fwidth(r), 0.0001);
+    float solarMask = 1.0 - smoothstep(1.0 - pixel, 1.0 + pixel, r);
+    vec2 q = (p - uMoonOffset) / uMoonRadius;
+    float lunarR = length(q);
+    float lunarLimb = limbRadius(atan(q.y, q.x));
+    float lunarPixel = max(fwidth(lunarR), 0.0001);
+    float lunarMask = 1.0 - smoothstep(lunarLimb - lunarPixel, lunarLimb + lunarPixel, lunarR);
+    float photosphere = solarMask * (1.0 - lunarMask);
+
+    // Limb darkening and weak granulation on a spherical photosphere, not a
+    // flat filled circle. Small features fade below pixel resolution.
+    float mu = sqrt(max(0.0, 1.0 - r * r));
+    vec3 solarNormal = vec3(p, mu);
+    float detail = 1.0 - smoothstep(0.002, 0.018, pixel);
+    float grain = mix(1.0, 0.97 + 0.06 * noise(solarNormal * 165.0), detail);
+    vec3 radiance = vec3(3.4, 2.25, 0.72) * (0.42 + 0.58 * mu) * grain * photosphere;
+
+    // Spherical projection of the existing lunar albedo/height maps. Earthshine
+    // is very faint; do not invent a metallic Fresnel ring or a lit full Moon.
+    if (lunarMask > 0.0) {
+      vec3 n = normalize(vec3(q, sqrt(max(0.0, 1.0 - dot(q, q)))));
+      vec2 uv = vec2(0.5 + atan(n.x, n.z) / 6.2831853, 0.5 + asin(n.y) / 3.14159265);
+      vec3 albedo = texture2D(uMoonMap, uv).rgb;
+      float h = texture2D(uMoonHeight, uv).r;
+      float hx = texture2D(uMoonHeight, uv + vec2(0.0008, 0)).r - h;
+      float hy = texture2D(uMoonHeight, uv + vec2(0, 0.0008)).r - h;
+      float relief = clamp(1.0 + (hx - hy) * 3.0, 0.65, 1.35);
+      float earthshine = mix(0.0012, 0.009, uCorona);
+      radiance += albedo * vec3(0.88, 0.92, 1.0) * earthshine
+        * (0.30 + 0.70 * pow(max(n.z, 0.0), 0.55)) * relief * lunarMask;
+    }
+
+    float angle = atan(p.y, p.x);
+    float height = max(r - 1.0, 0.0);
+    float streamer = 0.60 + 0.24 * cos(angle * 2.0 - 0.4)
+      + 0.12 * cos(angle * 5.0 + 1.3) + 0.07 * cos(angle * 13.0 + 0.2);
+    float filaments = 0.86 + 0.14 * sin(angle * 31.0 + sin(angle * 7.0) + log(max(r, 1.0)) * 2.0);
+    float corona = (0.62 * exp(-height * 6.0)
+      + 0.16 * exp(-height / (0.3 + streamer)) / max(r * r, 1.0) * filaments)
+      * smoothstep(0.98, 1.01, r) * uCorona * (1.0 - lunarMask);
+    vec3 optical = vec3(1.0, 0.86, 0.62) * corona;
+
+    // A finite point-spread approximation integrates only exposed solar arcs.
+    // It creates localized contact glare and wraps a little light over the
+    // lunar edge. No fixed-position highlight and no bloom from occulted light.
+    float insideMoon = max(uMoonRadius - length(p - uMoonOffset), 0.0);
+    if (r < 3.7 && uCoverage < 1.0 && insideMoon < 0.35) {
+      float bloom = 0.0;
+      for (int i = 0; i < ${ECLIPSE_GLOW_SAMPLES}; i++) {
+        vec2 d = p - uGlowSources[i].xy;
+        float d2 = dot(d, d);
+        bloom += uGlowSources[i].z * (3.5 * exp(-d2 / 0.017)
+          + 0.38 * exp(-d2 / 0.20) + 0.035 * exp(-sqrt(d2) * 2.6));
+      }
+      bloom *= (1.0 + 2.2 * smoothstep(0.9, 1.0, uCoverage)) / float(${ECLIPSE_GLOW_SAMPLES});
+      // Only the immediate silhouette receives a photographic light wrap;
+      // broad PSF wings must not turn the dark lunar face into a glass lens.
+      float lightWrap = exp(-insideMoon / 0.035);
+      optical += vec3(1.0, 0.65, 0.22) * bloom * 3.2 * lightWrap;
+      vec2 contactDelta = p - uContactGlow.xy;
+      float contactD2 = dot(contactDelta, contactDelta);
+      float contactCore = 5.0 * exp(-contactD2 / 0.0015);
+      float contactHalo = 0.65 * exp(-contactD2 / 0.025) + 0.07 * exp(-contactD2 / 0.16);
+      optical += (vec3(1.0, 0.91, 0.68) * contactCore
+        + vec3(1.0, 0.55, 0.16) * contactHalo) * uContactGlow.z * lightWrap;
+    }
+    // The chromosphere belongs to the Sun, not to the Moon's surface.
+    float chromosphere = exp(-pow((r - 1.006) / 0.008, 2.0))
+      * pow(max(0.0, cos(angle * 7.0 + sin(angle * 3.0))), 12.0)
+      * uCorona * (1.0 - lunarMask);
+    optical += vec3(0.5, 0.025, 0.04) * chromosphere;
+    radiance += optical;
+    radiance *= taper * uSunUp;
+    // Gentle highlight roll-off preserves a yellow glow and pale luminous core.
+    vec3 mapped = 1.0 - exp(-radiance);
+    float discAlpha = max(solarMask, lunarMask);
+    float glowAlpha = clamp(max(mapped.r, max(mapped.g, mapped.b)), 0.0, 1.0);
+    float alpha = max(discAlpha, glowAlpha) * taper;
+    if (alpha < 0.00001) discard;
+    gl_FragColor = vec4(mapped / max(alpha, 0.00001), alpha);
+    #include <colorspace_fragment>
+  }
+`;
+
 const SUN_FRAGMENT = /* glsl */`
   uniform float uSolarView;
-  uniform float uAnnular;
   varying vec2 vPoint;
   void main() {
     float radius = length(vPoint);
@@ -120,7 +237,7 @@ const SUN_FRAGMENT = /* glsl */`
     // Visible-band limb darkening.
     float limb = 1.0 - 0.6 * (1.0 - mu);
     vec3 colour = mix(vec3(1.0, 0.97, 0.90) * mix(0.72, 1.0, limb),
-      mix(vec3(1.0, 0.91, 0.73), vec3(1.0, 0.62, 0.18), uAnnular) * limb, uSolarView);
+      vec3(1.0, 0.91, 0.73) * limb, uSolarView);
     float width = mix(0.015, max(fwidth(radius), 0.0001), uSolarView);
     float edge = 1.0 - smoothstep(1.0 - width, 1.0, radius);
     gl_FragColor = vec4(colour, edge);
@@ -148,50 +265,10 @@ const MOON_FRAGMENT = /* glsl */`
   }
 `;
 
-// Corona in units of solar radii (the plane spans +-8 radii).
-const CORONA_FRAGMENT = /* glsl */`
-  uniform float uLevel;
-  uniform float uChromosphere;
-  varying vec2 vPoint;
-  float streamer(float angle) {
-    return 0.55 + 0.25 * cos(angle * 2.0 - 0.4) + 0.12 * cos(angle * 5.0 + 1.3)
-      + 0.08 * cos(angle * 13.0 + 0.2) + 0.05 * cos(angle * 29.0 + 2.7);
-  }
-  void main() {
-    float radius = length(vPoint) * 8.0;
-    if (radius < 0.98) discard;
-    // The plane ends at eight solar radii along its axes. Fade the outer
-    // streamers to zero *before* that boundary so its square silhouette can
-    // never be composited over the sky, even at high exposure.
-    float edge = 1.0 - smoothstep(5.2, 7.7, radius);
-    if (edge <= 0.0) discard;
-    float angle = atan(vPoint.y, vPoint.x);
-    float rays = streamer(angle);
-    float height = max(radius - 1.0, 0.0);
-    // Unequal, gently curved streamers. Dense inner corona falls much faster
-    // than the faint outer structures; no uniform luminous ring or spokes.
-    float filaments = pow(0.5 + 0.5 * sin(angle * 19.0 + sin(angle * 7.0) * 2.0
-      + 1.8 * log(max(radius, 1.0))), 2.0);
-    float inner = 0.65 * exp(-height * (6.5 + rays));
-    float outer = 0.18 * exp(-height / (0.32 + rays * 0.75)) / (radius * radius);
-    vec3 corona = vec3(0.95, 0.97, 1.0) * (inner + outer * (0.85 + filaments * 0.15)) * uLevel;
-    // Thin pink chromosphere, only at 2nd/3rd contact and totality.
-    float ring = exp(-pow((radius - 1.012) / 0.012, 2.0));
-    float patches = pow(max(0.0, cos(angle * 7.0 + sin(angle * 3.0))), 16.0);
-    vec3 pink = vec3(1.0, 0.08, 0.17) * ring * patches * 0.35 * uChromosphere;
-    vec3 colour = corona + pink;
-    gl_FragColor = vec4(colour, edge);
-    #include <colorspace_fragment>
-  }
-`;
-
 const GLARE_FRAGMENT = /* glsl */`
   uniform float uLevel;
   uniform float uCore;
   uniform float uSolarView;
-  uniform float uAnnular;
-  uniform vec2 uMoonOffset;
-  uniform float uMoonRadius;
   varying vec2 vPoint;
   void main() {
     float radius = length(vPoint);
@@ -209,12 +286,6 @@ const GLARE_FRAGMENT = /* glsl */`
     float solarBloom = (exp(-height * 22.0) * 0.05 + exp(-height * 5.0) * 0.004)
       * smoothstep(0.98, 1.0, solarRadius);
     colour = mix(colour, vec3(1.0, 0.91, 0.75) * solarBloom * uLevel, uSolarView);
-    // Warm photographic bloom follows the exposed arc, not a fixed flare.
-    vec2 rim = normalize(vPoint + vec2(1e-7));
-    float exposed = smoothstep(-0.025, 0.12, length(rim - uMoonOffset) - uMoonRadius);
-    float warmHalo = (0.5 * exp(-height * 9.0) + 0.065 * exp(-height * 2.8))
-      * smoothstep(0.97, 1.0, solarRadius) * mix(0.15, 1.0, exposed);
-    colour += vec3(1.0, 0.42, 0.065) * warmHalo * uLevel * uAnnular;
     gl_FragColor = vec4(colour, edge);
     #include <colorspace_fragment>
   }
@@ -288,17 +359,8 @@ export function createGroundSky(site: GroundSite, pixelRatio: number, options: G
   scene.add(points);
 
   const discGeometry = new THREE.CircleGeometry(1, 128);
-  const annularUniform = { value: 0 };
-  const coronaUniforms = { uLevel: { value: 0 }, uChromosphere: { value: 0 } };
-  const corona = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), new THREE.ShaderMaterial({
-    uniforms: coronaUniforms, vertexShader: DISC_VERTEX, fragmentShader: CORONA_FRAGMENT,
-    transparent: true, depthTest: false, depthWrite: false, blending: THREE.AdditiveBlending,
-  }));
-  corona.renderOrder = 2;
-  scene.add(corona);
-
   const sun = new THREE.Mesh(discGeometry, new THREE.ShaderMaterial({
-    uniforms: { uSolarView: skyUniforms.uSolarView, uAnnular: annularUniform },
+    uniforms: { uSolarView: skyUniforms.uSolarView },
     vertexShader: DISC_VERTEX, fragmentShader: SUN_FRAGMENT, transparent: true, depthTest: false, depthWrite: false,
   }));
   sun.renderOrder = 3;
@@ -313,8 +375,22 @@ export function createGroundSky(site: GroundSite, pixelRatio: number, options: G
   moon.renderOrder = 4;
   scene.add(moon);
 
-  const glareUniforms = { uLevel: { value: 0 }, uCore: { value: 0.02 }, uSolarView: { value: event === 'solar-eclipse' ? 1 : 0 },
-    uAnnular: annularUniform, uMoonOffset: { value: new THREE.Vector2() }, uMoonRadius: { value: 1 } };
+  const moonHeight = event === 'solar-eclipse' ? new THREE.TextureLoader().load('/textures/moon-height.jpg') : null;
+  const glowSources = new Float32Array(ECLIPSE_GLOW_SAMPLES * 3);
+  const eclipseUniforms = {
+    uMoonOffset: { value: new THREE.Vector2() }, uMoonRadius: { value: 1 },
+    uCorona: { value: 0.025 }, uCoverage: { value: 0 }, uSunUp: { value: 1 },
+    uMoonMap: { value: moonTexture }, uMoonHeight: { value: moonHeight },
+    uGlowSources: { value: glowSources },
+    uContactGlow: { value: new THREE.Vector3() },
+  };
+  const solarComposite = event === 'solar-eclipse' ? new THREE.Mesh(new THREE.PlaneGeometry(2, 2), new THREE.ShaderMaterial({
+    uniforms: eclipseUniforms, vertexShader: DISC_VERTEX, fragmentShader: SOLAR_ECLIPSE_FRAGMENT,
+    transparent: true, depthTest: false, depthWrite: false,
+  })) : null;
+  if (solarComposite) { solarComposite.renderOrder = 4; scene.add(solarComposite); }
+
+  const glareUniforms = { uLevel: { value: 0 }, uCore: { value: 0.02 }, uSolarView: { value: event === 'solar-eclipse' ? 1 : 0 } };
   const glare = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), new THREE.ShaderMaterial({
     uniforms: glareUniforms, vertexShader: DISC_VERTEX, fragmentShader: GLARE_FRAGMENT,
     transparent: true, depthTest: false, depthWrite: false, blending: THREE.AdditiveBlending,
@@ -428,7 +504,6 @@ export function createGroundSky(site: GroundSite, pixelRatio: number, options: G
       if (utcMs !== lastUtcMs) {
         lastUtcMs = utcMs;
         state = eclipseSky(utcMs, site);
-        annularUniform.value = event === 'solar-eclipse' && state.moon.angularRadius < state.sun.angularRadius ? 1 : 0;
         if (!(Math.abs(utcMs - lastBackdropMs) < 60_000)) {
           lastBackdropMs = utcMs;
           refreshBackdrop(utcMs);
@@ -440,17 +515,15 @@ export function createGroundSky(site: GroundSite, pixelRatio: number, options: G
         targetAzimuth = targetDisc.azimuth;
         placeFacing(sun, sunDirection, SUN_DISTANCE, SUN_DISTANCE * Math.tan(state.sun.angularRadius));
         placeFacing(moon, moonDirection, MOON_DISTANCE, MOON_DISTANCE * Math.tan(state.moon.angularRadius));
-        placeFacing(corona, sunDirection, CORONA_DISTANCE, CORONA_DISTANCE * Math.tan(state.sun.angularRadius) * 8);
         const visible = event === 'solar-eclipse' ? 1 - state.coverage : 1;
         const sunUp = THREE.MathUtils.smoothstep(state.sun.altitude, -8, 4);
         // Perceived brightness: roughly logarithmic in the remaining sunlight.
         daylight = Math.pow(Math.max(visible, 0.0008), 0.42) * THREE.MathUtils.smoothstep(state.sun.altitude, -12, 8);
         const totality = event === 'solar-eclipse' ? THREE.MathUtils.smoothstep(state.coverage, 0.9999, 1) : 0;
-        // Annular eclipses never reveal the corona, even with high coverage.
         // A short exposure transition around contact, not a binary totality
         // threshold. Keep the annular halo separate from the solar corona.
-        coronaTarget = event === 'solar-eclipse' && state.moon.angularRadius >= state.sun.angularRadius
-          ? THREE.MathUtils.smoothstep(state.coverage, 0.97, 1) * sunUp : 0;
+        coronaTarget = event === 'solar-eclipse'
+          ? coronaVisibility(state.coverage, state.moon.angularRadius / state.sun.angularRadius) : 0;
         if (event === 'solar-eclipse') daylight = THREE.MathUtils.lerp(daylight, 0.001, totality);
         skyUniforms.uSunDirection.value.copy(sunDirection);
         skyUniforms.uDaylight.value = daylight;
@@ -463,17 +536,31 @@ export function createGroundSky(site: GroundSite, pixelRatio: number, options: G
         }
         // Naked-eye limiting magnitude falls as the sky darkens.
         pointUniforms.uLimit.value = 6 - 12 * THREE.MathUtils.smoothstep(daylight, 0.03, 0.42);
-        sun.visible = state.sun.altitude > -1;
-        moon.visible = event === 'solar-eclipse' ? state.sun.altitude > -1 : state.moon.altitude > -1;
-        corona.visible = event === 'solar-eclipse';
+        sun.visible = event === 'lunar-eclipse' && state.sun.altitude > -1;
+        moon.visible = event === 'lunar-eclipse' && state.moon.altitude > -1;
+        glare.visible = event === 'lunar-eclipse';
+        if (solarComposite) {
+          solarComposite.visible = state.sun.altitude > -1;
+          placeFacing(solarComposite, sunDirection, SUN_DISTANCE, SUN_DISTANCE * Math.tan(state.sun.angularRadius) * 8);
+          glareInverseRotation.copy(solarComposite.quaternion).invert();
+          glareLocalMoon.copy(moonDirection).applyQuaternion(glareInverseRotation);
+          const scale = Math.max(Math.abs(glareLocalMoon.z) * Math.tan(state.sun.angularRadius), 1e-8);
+          const mx = glareLocalMoon.x / scale, my = glareLocalMoon.y / scale;
+          const mr = Math.tan(state.moon.angularRadius) / Math.tan(state.sun.angularRadius);
+          eclipseUniforms.uMoonOffset.value.set(mx, my);
+          eclipseUniforms.uMoonRadius.value = mr;
+          eclipseUniforms.uCoverage.value = state.coverage;
+          eclipseUniforms.uSunUp.value = sunUp;
+          fillEclipseGlowSources(glowSources, mx, my, mr);
+          eclipseUniforms.uContactGlow.value.set(...contactGlowSource(glowSources, state.coverage));
+        }
         glareUniforms.uLevel.value = Math.pow(visible, 0.7) * sunUp * 0.65;
       }
       // Smooth in wall-clock time as well so accelerated playback cannot skip
       // the fade. Explicit timeline seeks (dt = 0) render the requested instant.
       coronaBrightness = elapsedSeconds === 0 ? coronaTarget
         : THREE.MathUtils.lerp(coronaBrightness, coronaTarget, 1 - Math.exp(-Math.min(elapsedSeconds, 0.1) / 0.55));
-      coronaUniforms.uLevel.value = coronaBrightness;
-      coronaUniforms.uChromosphere.value = coronaBrightness;
+      eclipseUniforms.uCorona.value = coronaBrightness;
       applyView(elapsedSeconds);
       if (state) {
         // Close solar views emulate filtered/short-exposure photography. The
@@ -491,11 +578,6 @@ export function createGroundSky(site: GroundSite, pixelRatio: number, options: G
           ? Math.tan(state.sun.angularRadius) * 4
           : Math.max(Math.tan(state.sun.angularRadius) * 9, halfHeight * 0.12));
         placeFacing(glare, sunDirection, GLARE_DISTANCE, glareRadius);
-        glareInverseRotation.copy(glare.quaternion).invert();
-        glareLocalMoon.set(...horizontalDirection(state.moon.altitude, state.moon.azimuth)).applyQuaternion(glareInverseRotation);
-        const solarScale = Math.max(Math.abs(glareLocalMoon.z) * Math.tan(state.sun.angularRadius), 1e-8);
-        glareUniforms.uMoonOffset.value.set(glareLocalMoon.x / solarScale, glareLocalMoon.y / solarScale);
-        glareUniforms.uMoonRadius.value = Math.tan(state.moon.angularRadius) / Math.tan(state.sun.angularRadius);
         const sunPixels = Math.tan(state.sun.angularRadius) / halfHeight * viewportHeight / 2;
         glareUniforms.uCore.value = THREE.MathUtils.clamp(sunPixels / (viewportHeight * 0.45), 0.008, 0.6);
       }
@@ -541,6 +623,7 @@ export function createGroundSky(site: GroundSite, pixelRatio: number, options: G
     },
     dispose() {
       moonTexture.dispose();
+      moonHeight?.dispose();
       scene.traverse(object => {
         if (object instanceof THREE.Mesh || object instanceof THREE.Points) {
           object.geometry.dispose();

@@ -112,6 +112,7 @@ const DISC_VERTEX = /* glsl */`
 
 const SUN_FRAGMENT = /* glsl */`
   uniform float uSolarView;
+  uniform float uAnnular;
   varying vec2 vPoint;
   void main() {
     float radius = length(vPoint);
@@ -119,7 +120,7 @@ const SUN_FRAGMENT = /* glsl */`
     // Visible-band limb darkening.
     float limb = 1.0 - 0.6 * (1.0 - mu);
     vec3 colour = mix(vec3(1.0, 0.97, 0.90) * mix(0.72, 1.0, limb),
-      vec3(1.0, 0.91, 0.73) * limb, uSolarView);
+      mix(vec3(1.0, 0.91, 0.73), vec3(1.0, 0.62, 0.18), uAnnular) * limb, uSolarView);
     float width = mix(0.015, max(fwidth(radius), 0.0001), uSolarView);
     float edge = 1.0 - smoothstep(1.0 - width, 1.0, radius);
     gl_FragColor = vec4(colour, edge);
@@ -188,6 +189,9 @@ const GLARE_FRAGMENT = /* glsl */`
   uniform float uLevel;
   uniform float uCore;
   uniform float uSolarView;
+  uniform float uAnnular;
+  uniform vec2 uMoonOffset;
+  uniform float uMoonRadius;
   varying vec2 vPoint;
   void main() {
     float radius = length(vPoint);
@@ -205,6 +209,12 @@ const GLARE_FRAGMENT = /* glsl */`
     float solarBloom = (exp(-height * 22.0) * 0.05 + exp(-height * 5.0) * 0.004)
       * smoothstep(0.98, 1.0, solarRadius);
     colour = mix(colour, vec3(1.0, 0.91, 0.75) * solarBloom * uLevel, uSolarView);
+    // Warm photographic bloom follows the exposed arc, not a fixed flare.
+    vec2 rim = normalize(vPoint + vec2(1e-7));
+    float exposed = smoothstep(-0.025, 0.12, length(rim - uMoonOffset) - uMoonRadius);
+    float warmHalo = (0.5 * exp(-height * 9.0) + 0.065 * exp(-height * 2.8))
+      * smoothstep(0.97, 1.0, solarRadius) * mix(0.15, 1.0, exposed);
+    colour += vec3(1.0, 0.42, 0.065) * warmHalo * uLevel * uAnnular;
     gl_FragColor = vec4(colour, edge);
     #include <colorspace_fragment>
   }
@@ -278,6 +288,7 @@ export function createGroundSky(site: GroundSite, pixelRatio: number, options: G
   scene.add(points);
 
   const discGeometry = new THREE.CircleGeometry(1, 128);
+  const annularUniform = { value: 0 };
   const coronaUniforms = { uLevel: { value: 0 }, uChromosphere: { value: 0 } };
   const corona = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), new THREE.ShaderMaterial({
     uniforms: coronaUniforms, vertexShader: DISC_VERTEX, fragmentShader: CORONA_FRAGMENT,
@@ -287,7 +298,7 @@ export function createGroundSky(site: GroundSite, pixelRatio: number, options: G
   scene.add(corona);
 
   const sun = new THREE.Mesh(discGeometry, new THREE.ShaderMaterial({
-    uniforms: { uSolarView: skyUniforms.uSolarView },
+    uniforms: { uSolarView: skyUniforms.uSolarView, uAnnular: annularUniform },
     vertexShader: DISC_VERTEX, fragmentShader: SUN_FRAGMENT, transparent: true, depthTest: false, depthWrite: false,
   }));
   sun.renderOrder = 3;
@@ -302,7 +313,8 @@ export function createGroundSky(site: GroundSite, pixelRatio: number, options: G
   moon.renderOrder = 4;
   scene.add(moon);
 
-  const glareUniforms = { uLevel: { value: 0 }, uCore: { value: 0.02 }, uSolarView: { value: event === 'solar-eclipse' ? 1 : 0 } };
+  const glareUniforms = { uLevel: { value: 0 }, uCore: { value: 0.02 }, uSolarView: { value: event === 'solar-eclipse' ? 1 : 0 },
+    uAnnular: annularUniform, uMoonOffset: { value: new THREE.Vector2() }, uMoonRadius: { value: 1 } };
   const glare = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), new THREE.ShaderMaterial({
     uniforms: glareUniforms, vertexShader: DISC_VERTEX, fragmentShader: GLARE_FRAGMENT,
     transparent: true, depthTest: false, depthWrite: false, blending: THREE.AdditiveBlending,
@@ -320,6 +332,8 @@ export function createGroundSky(site: GroundSite, pixelRatio: number, options: G
   let targetAzimuth = 0;
   const sunDirection = new THREE.Vector3(0, 1, 0);
   const lookDirection = new THREE.Vector3();
+  const glareLocalMoon = new THREE.Vector3();
+  const glareInverseRotation = new THREE.Quaternion();
 
   // View: the camera always looks at the target plus a small user offset in
   // degrees. The offset is bounded by the field of view so the target never
@@ -336,6 +350,8 @@ export function createGroundSky(site: GroundSite, pixelRatio: number, options: G
   // interpolated in log space so the zoom reads as a constant rate.
   interface Intro { elapsed: number; duration: number; startFov: number; endFov: number }
   let intro: Intro | null = null;
+  let coronaTarget = 0;
+  let coronaBrightness = 0;
 
   function placeFacing(mesh: THREE.Object3D, direction: THREE.Vector3, distance: number, radius: number) {
     mesh.position.copy(direction).multiplyScalar(distance);
@@ -412,6 +428,7 @@ export function createGroundSky(site: GroundSite, pixelRatio: number, options: G
       if (utcMs !== lastUtcMs) {
         lastUtcMs = utcMs;
         state = eclipseSky(utcMs, site);
+        annularUniform.value = event === 'solar-eclipse' && state.moon.angularRadius < state.sun.angularRadius ? 1 : 0;
         if (!(Math.abs(utcMs - lastBackdropMs) < 60_000)) {
           lastBackdropMs = utcMs;
           refreshBackdrop(utcMs);
@@ -430,14 +447,15 @@ export function createGroundSky(site: GroundSite, pixelRatio: number, options: G
         daylight = Math.pow(Math.max(visible, 0.0008), 0.42) * THREE.MathUtils.smoothstep(state.sun.altitude, -12, 8);
         const totality = event === 'solar-eclipse' ? THREE.MathUtils.smoothstep(state.coverage, 0.9999, 1) : 0;
         // Annular eclipses never reveal the corona, even with high coverage.
-        const coronaLevel = state.moon.angularRadius >= state.sun.angularRadius ? totality : 0;
+        // A short exposure transition around contact, not a binary totality
+        // threshold. Keep the annular halo separate from the solar corona.
+        coronaTarget = event === 'solar-eclipse' && state.moon.angularRadius >= state.sun.angularRadius
+          ? THREE.MathUtils.smoothstep(state.coverage, 0.97, 1) * sunUp : 0;
         if (event === 'solar-eclipse') daylight = THREE.MathUtils.lerp(daylight, 0.001, totality);
         skyUniforms.uSunDirection.value.copy(sunDirection);
         skyUniforms.uDaylight.value = daylight;
         skyUniforms.uSunUp.value = 0.15 + 0.85 * sunUp;
         skyUniforms.uTotality.value = totality * sunUp;
-        coronaUniforms.uLevel.value = coronaLevel;
-        coronaUniforms.uChromosphere.value = coronaLevel;
         moonUniforms.uEarthshine.value = 0.3 + 0.7 * totality;
         if (event === 'lunar-eclipse') {
           const minutesFromPeak = Math.abs(utcMs - (options.peakMs ?? utcMs)) / 60_000;
@@ -450,6 +468,12 @@ export function createGroundSky(site: GroundSite, pixelRatio: number, options: G
         corona.visible = event === 'solar-eclipse';
         glareUniforms.uLevel.value = Math.pow(visible, 0.7) * sunUp * 0.65;
       }
+      // Smooth in wall-clock time as well so accelerated playback cannot skip
+      // the fade. Explicit timeline seeks (dt = 0) render the requested instant.
+      coronaBrightness = elapsedSeconds === 0 ? coronaTarget
+        : THREE.MathUtils.lerp(coronaBrightness, coronaTarget, 1 - Math.exp(-Math.min(elapsedSeconds, 0.1) / 0.55));
+      coronaUniforms.uLevel.value = coronaBrightness;
+      coronaUniforms.uChromosphere.value = coronaBrightness;
       applyView(elapsedSeconds);
       if (state) {
         // Close solar views emulate filtered/short-exposure photography. The
@@ -467,6 +491,11 @@ export function createGroundSky(site: GroundSite, pixelRatio: number, options: G
           ? Math.tan(state.sun.angularRadius) * 4
           : Math.max(Math.tan(state.sun.angularRadius) * 9, halfHeight * 0.12));
         placeFacing(glare, sunDirection, GLARE_DISTANCE, glareRadius);
+        glareInverseRotation.copy(glare.quaternion).invert();
+        glareLocalMoon.set(...horizontalDirection(state.moon.altitude, state.moon.azimuth)).applyQuaternion(glareInverseRotation);
+        const solarScale = Math.max(Math.abs(glareLocalMoon.z) * Math.tan(state.sun.angularRadius), 1e-8);
+        glareUniforms.uMoonOffset.value.set(glareLocalMoon.x / solarScale, glareLocalMoon.y / solarScale);
+        glareUniforms.uMoonRadius.value = Math.tan(state.moon.angularRadius) / Math.tan(state.sun.angularRadius);
         const sunPixels = Math.tan(state.sun.angularRadius) / halfHeight * viewportHeight / 2;
         glareUniforms.uCore.value = THREE.MathUtils.clamp(sunPixels / (viewportHeight * 0.45), 0.008, 0.6);
       }

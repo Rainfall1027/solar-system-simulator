@@ -924,11 +924,12 @@ body[data-view="focus"] .label-layer { opacity: 0 !important; pointer-events: no
 .ground-hud-countdown { margin: 0 0 8px; color: var(--warm); font-size: 13px; font-variant-numeric: tabular-nums; min-height: 1.3em; }
 .ground-hud-track { position: relative; height: 4px; margin: 0 0 14px; border-radius: 2px; background: var(--fill-strong); }
 .ground-hud-central { position: absolute; top: 0; bottom: 0; border-radius: 2px; background: var(--warm); }
-.ground-hud-cursor {
-  position: absolute; top: 50%; left: 0; width: 10px; height: 10px; margin: -5px 0 0 -5px;
-  border-radius: 50%; background: #fff; box-shadow: 0 0 0 2px rgb(0 0 0 / 35%);
-  will-change: left;
-}
+.ground-hud-seek[type="range"] { position: absolute; inset: -12px 0 auto; width: 100%; height: 28px; margin: 0; padding: 0; appearance: none; background: transparent; cursor: ew-resize; touch-action: none; }
+.ground-hud-seek::-webkit-slider-runnable-track { height: 4px; background: transparent; }
+.ground-hud-seek::-webkit-slider-thumb { appearance: none; width: 14px; height: 14px; margin-top: -5px; border: 0; border-radius: 50%; background: white; box-shadow: 0 0 0 2px rgb(0 0 0 / 35%); }
+.ground-hud-seek::-moz-range-track { height: 4px; background: transparent; }
+.ground-hud-seek::-moz-range-thumb { width: 14px; height: 14px; border: 0; border-radius: 50%; background: white; }
+.ground-hud-seek:focus-visible { outline: 2px solid var(--warm); outline-offset: 2px; border-radius: 6px; }
 .ground-hud-rates, .ground-hud-actions { display: flex; gap: 6px; margin: 0 0 8px; }
 .ground-hud-rates button, .ground-hud-actions button {
   flex: 1 1 0; min-height: 30px; padding: 0 6px;

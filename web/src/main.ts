@@ -1858,9 +1858,9 @@ function buildGroundHud(view: GroundView): void {
       <div><dt>阶段</dt><dd data-ground="stage"></dd></div>
     </dl>
     <p class="ground-hud-countdown" data-ground="countdown"></p>
-    <div class="ground-hud-track" aria-hidden="true">
-      <span class="ground-hud-central" style="left:${centralStart}%;width:${Math.max(centralEnd - centralStart, 0.6)}%"></span>
-      <span class="ground-hud-cursor" data-ground="cursor"></span>
+    <div class="ground-hud-track">
+      <span aria-hidden="true" class="ground-hud-central" style="left:${centralStart}%;width:${Math.max(centralEnd - centralStart, 0.6)}%"></span>
+      <input class="ground-hud-seek" data-ground="cursor" type="range" min="0" max="10000" step="1" value="0" aria-label="日月食时间进度" />
     </div>
     <div class="ground-hud-rates" role="group" aria-label="时间流速">
       ${GROUND_RATES.map(rate => `<button type="button" data-ground-rate="${rate}">${rate === 0 ? '暂停' : `${rate}×`}</button>`).join('')}
@@ -1876,6 +1876,19 @@ function buildGroundHud(view: GroundView): void {
     time: field('time'), coverage: field('coverage'), altitude: field('altitude'),
     stage: field('stage'), countdown: field('countdown'), cursor: field('cursor'),
   };
+  const seek = groundFields.cursor as HTMLInputElement;
+  seek.addEventListener('pointerdown', event => {
+    event.stopPropagation();
+    setGroundRate(0);
+  });
+  seek.addEventListener('input', () => {
+    if (groundView !== view || view.phase !== 'ground') return;
+    setGroundRate(0);
+    simulationClock.utcMs = view.startMs + Number(seek.value) / 10000 * span;
+    simulationDays = (simulationClock.utcMs - J2000_MS) / DAY_MS;
+    view.readout = view.sky!.update(simulationClock.utcMs, 0, appViewport.clientHeight);
+    updateGroundHud(view);
+  });
   refreshGroundRates();
 }
 
@@ -1914,8 +1927,10 @@ function updateGroundHud(view: GroundView): void {
       : utcMs < timeline.partialEndMs ? `距${view.event === 'solar-eclipse' ? '日食' : '月食'}结束 ${formatDuration(timeline.partialEndMs - utcMs)}`
         : `${view.wonderName}已结束`);
   const progress = THREE.MathUtils.clamp((utcMs - view.startMs) / (timeline.partialEndMs - view.startMs), 0, 1);
-  const left = `${(progress * 100).toFixed(2)}%`;
-  if (fields.cursor.style.left !== left) fields.cursor.style.left = left;
+  const seek = fields.cursor as HTMLInputElement;
+  const value = String(Math.round(progress * 10000));
+  if (seek.value !== value) seek.value = value;
+  seek.setAttribute('aria-valuetext', `${formatBeijingTime(utcMs)}，${stage}`);
 }
 
 function setGroundRate(rate: number): void {

@@ -40,8 +40,14 @@
         </div>
       </div>
 
-      <aside class="system-panel glass" aria-label="天体目录">
-        <h2 class="panel-heading">天体目录</h2>
+      <aside class="system-panel glass collapsed" aria-label="天体目录">
+        <h2 class="panel-heading">
+          <button id="catalog-panel-toggle" class="panel-heading-toggle" type="button" aria-expanded="false" aria-controls="catalog-body">
+            <span>天体目录</span>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6" /></svg>
+          </button>
+        </h2>
+        <div id="catalog-body" class="catalog-body"><div class="catalog-body-inner">
         <div class="catalog-search">
           <input id="catalog-search" class="workspace-search" type="search" placeholder="搜索天体：名称或英文名" autocomplete="off" aria-label="搜索天体" />
         </div>
@@ -91,6 +97,7 @@
             <i class="oort-swatch outer" aria-hidden="true"></i><span>外奥尔特云</span><small>约 20k–100k AU</small>
           </div>
         </nav>
+        </div></div>
       </aside>
 
       <section class="scene-heading">

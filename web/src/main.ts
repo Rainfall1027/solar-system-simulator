@@ -277,9 +277,12 @@ const workspacePanel = document.querySelector<HTMLElement>('#workspace-panel')!;
 const workspaceStage = document.querySelector<HTMLElement>('#workspace-stage')!;
 const simulationControls = document.querySelector<HTMLElement>('#simulation-controls')!;
 const systemPanel = document.querySelector<HTMLElement>('.system-panel')!;
+const catalogPanelToggle = document.querySelector<HTMLButtonElement>('#catalog-panel-toggle')!;
 const sidebarPanel = document.querySelector<HTMLElement>('.sidebar')!;
 const statusMessage = document.querySelector<HTMLElement>('#status-message')!;
-const compactLayout = window.matchMedia('(max-width: 900px)');
+// Cards stack above the dock only when a narrow window also has the height for it;
+// short landscape windows keep the right rail (see the matching block in styles.css).
+const compactLayout = window.matchMedia('(max-width: 900px) and (min-height: 561px), (max-width: 900px) and (orientation: portrait)');
 const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
 const diagnosticOutput = document.querySelector<HTMLOutputElement>('#performance-stats')!;
 let diagnosticsEnabled = new URLSearchParams(location.search).has('diagnostics');
@@ -1574,7 +1577,27 @@ function resize(): void {
     camera.position.sub(controls.target).multiplyScalar(ratio).add(controls.target);
   }
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-  renderer.setSize(clientWidth, clientHeight);
+  // CSS keeps the canvas at 100% of #viewport; only the drawing buffer follows here.
+  renderer.setSize(clientWidth, clientHeight, false);
+}
+
+// The window 'resize' event misses container-driven changes (split view, emulated
+// viewports, panels, moving to a screen with another DPR). Observe the viewport
+// element itself and coalesce bursts into one resize per frame.
+let resizeFrame = 0;
+function scheduleResize(): void {
+  if (resizeFrame) return;
+  resizeFrame = requestAnimationFrame(() => {
+    resizeFrame = 0;
+    resize();
+  });
+}
+function watchDevicePixelRatio(): void {
+  const query = window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
+  query.addEventListener('change', () => {
+    scheduleResize();
+    watchDevicePixelRatio();
+  }, { once: true, signal: abortEvents.signal });
 }
 
 function setOrbitVisibility(enabled: boolean): void {
@@ -2475,6 +2498,10 @@ for (const toggle of catalogToggles) {
   }, eventOptions);
 }
 catalogSearch.addEventListener('input', () => filterCatalog(catalogSearch.value), eventOptions);
+catalogPanelToggle.addEventListener('click', () => {
+  const expanded = systemPanel.classList.toggle('collapsed') === false;
+  catalogPanelToggle.setAttribute('aria-expanded', String(expanded));
+}, eventOptions);
 observationModeButton.addEventListener('click', () => setExperienceMode('observation'), eventOptions);
 experimentModeButton.addEventListener('click', () => setExperienceMode('experiment'), eventOptions);
 wondersModeButton.addEventListener('click', () => setExperienceMode('wonders'), eventOptions);
@@ -2525,7 +2552,12 @@ applyExperiencePanel(activeExperience);
 warmUpRenderer();
 detailShell.open = false;
 resize();
-window.addEventListener('resize', resize, eventOptions);
+const viewportObserver = new ResizeObserver(scheduleResize);
+viewportObserver.observe(appViewport);
+abortEvents.signal.addEventListener('abort', () => viewportObserver.disconnect(), { once: true });
+window.addEventListener('resize', scheduleResize, eventOptions);
+window.visualViewport?.addEventListener('resize', scheduleResize, eventOptions);
+watchDevicePixelRatio();
 compactLayout.addEventListener('change', () => { detailShell.open = viewLayer === 'focus'; }, eventOptions);
 detailShell.addEventListener('toggle', () => {
   if (!detailShell.open) resetEarthAnalysis();

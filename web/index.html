@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#000000" />
+    <meta name="color-scheme" content="dark" />
+    <title>太阳系 · 实时星历</title>
+  </head>
+  <body data-experience="observation">
+    <main id="app">
+      <section id="viewport" aria-label="太阳系三维视图"></section>
+
+      <header class="observatory-header" aria-label="主导航">
+        <div class="observatory-brand">
+          <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true">
+            <ellipse cx="12" cy="12" rx="10" ry="4.2" transform="rotate(-22 12 12)" fill="none" stroke="currentColor" stroke-width="1.3" opacity=".55" />
+            <circle cx="12" cy="12" r="3.4" fill="currentColor" />
+            <circle cx="20.2" cy="8.6" r="1.5" fill="currentColor" />
+          </svg>
+          <strong>太阳系观测台</strong>
+        </div>
+        <div id="experience-mode" class="experience-switch" role="group" aria-label="工作模式" data-mode="observation">
+          <i class="experience-thumb" aria-hidden="true"></i>
+          <button id="observation-mode" type="button" aria-pressed="true">太阳系观测</button>
+          <button id="experiment-mode" type="button" aria-pressed="false">引力实验</button>
+          <button id="wonders-mode" type="button" aria-pressed="false">天文奇观</button>
+        </div>
+        <div class="live-status">
+          <span class="live-dot" aria-hidden="true"></span>
+          <time id="simulation-time">正在同步时间…</time>
+        </div>
+      </header>
+
+      <div class="scope-switch-row">
+        <div id="scope-switch" class="scope-switch segmented" role="group" aria-label="视图范围" data-mode="overview">
+          <i class="segmented-thumb" aria-hidden="true"></i>
+          <button id="scope-overview" type="button" aria-pressed="true">太阳系</button>
+          <button id="scope-focus" type="button" aria-pressed="false">地球</button>
+        </div>
+      </div>
+
+      <aside class="system-panel glass" aria-label="天体目录">
+        <h2 class="panel-heading">天体目录</h2>
+        <div class="catalog-search">
+          <input id="catalog-search" class="workspace-search" type="search" placeholder="搜索天体：名称或英文名" autocomplete="off" aria-label="搜索天体" />
+        </div>
+        <nav class="system-tree" aria-label="太阳系天体导航">
+          <button type="button" data-catalog-body="sun"><i class="body-swatch sun"></i><span>太阳</span><small>Sun</small></button>
+          <button type="button" data-catalog-body="mercury"><i class="body-swatch mercury"></i><span>水星</span><small>Mercury</small></button>
+          <button type="button" data-catalog-body="venus"><i class="body-swatch venus"></i><span>金星</span><small>Venus</small></button>
+          <div class="catalog-group">
+            <div class="catalog-row">
+              <button type="button" data-catalog-body="earth"><i class="body-swatch earth"></i><span>地球</span><small>Earth</small></button>
+              <button class="catalog-toggle" type="button" data-catalog-toggle aria-label="展开地球的卫星" aria-expanded="false">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6" /></svg>
+              </button>
+            </div>
+            <div class="catalog-children">
+              <button type="button" data-catalog-body="moon"><i class="body-swatch moon"></i><span>月球</span><small>Moon</small></button>
+            </div>
+          </div>
+          <button type="button" data-catalog-body="mars"><i class="body-swatch mars"></i><span>火星</span><small>Mars</small></button>
+          <div class="system-feature" aria-label="主小行星带，约 2.06 至 3.27 天文单位">
+            <i class="belt-swatch" aria-hidden="true"></i><span>主小行星带</span><small>2.06–3.27 AU</small>
+          </div>
+          <div class="catalog-group">
+            <div class="catalog-row">
+              <button type="button" data-catalog-body="jupiter"><i class="body-swatch jupiter"></i><span>木星</span><small>Jupiter</small></button>
+              <button class="catalog-toggle" type="button" data-catalog-toggle aria-label="展开木星的卫星" aria-expanded="false">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6" /></svg>
+              </button>
+            </div>
+            <div class="catalog-children">
+              <button type="button" data-catalog-body="io"><i class="body-swatch io"></i><span>木卫一</span><small>Io</small></button>
+              <button type="button" data-catalog-body="europa"><i class="body-swatch europa"></i><span>木卫二</span><small>Europa</small></button>
+              <button type="button" data-catalog-body="ganymede"><i class="body-swatch ganymede"></i><span>木卫三</span><small>Ganymede</small></button>
+              <button type="button" data-catalog-body="callisto"><i class="body-swatch callisto"></i><span>木卫四</span><small>Callisto</small></button>
+            </div>
+          </div>
+          <button type="button" data-catalog-body="saturn"><i class="body-swatch saturn"></i><span>土星</span><small>Saturn</small></button>
+          <button type="button" data-catalog-body="uranus"><i class="body-swatch uranus"></i><span>天王星</span><small>Uranus</small></button>
+          <button type="button" data-catalog-body="neptune"><i class="body-swatch neptune"></i><span>海王星</span><small>Neptune</small></button>
+          <div class="system-feature" aria-label="柯伊伯带，海王星外约 30 至 50 天文单位的冰质小天体盘">
+            <i class="kuiper-swatch" aria-hidden="true"></i><span>柯伊伯带</span><small>30–50 AU</small>
+          </div>
+          <div class="system-feature" aria-label="内奥尔特云，又称希尔斯云，约 2,000 至 20,000 天文单位的推测分区，非等比例示意">
+            <i class="oort-swatch inner" aria-hidden="true"></i><span>内奥尔特云</span><small>约 2k–20k AU</small>
+          </div>
+          <div class="system-feature" aria-label="外奥尔特云，约 20,000 至 100,000 天文单位的推测分区，非等比例示意">
+            <i class="oort-swatch outer" aria-hidden="true"></i><span>外奥尔特云</span><small>约 20k–100k AU</small>
+          </div>
+        </nav>
+      </aside>
+
+      <section class="scene-heading">
+        <div aria-live="polite">
+          <p id="scene-eyebrow" class="scene-eyebrow">星历静止</p>
+          <h1 id="scene-heading-title">太阳系</h1>
+          <p id="scene-heading-subtitle" class="scene-subtitle">太阳与八大行星 · UTC 实时星历</p>
+        </div>
+      </section>
+
+      <div class="sidebar">
+        <div id="workspace-stage" class="workspace-stage">
+          <section id="workspace-panel" class="card glass workspace-panel" aria-live="polite" hidden></section>
+          <section id="simulation-controls" class="card glass controls" aria-label="视角中心">
+            <div class="setting-row">
+              <span id="lock-center-caption">视角中心</span>
+              <button id="lock-center" type="button" aria-haspopup="menu" aria-expanded="false" aria-labelledby="lock-center-caption lock-center-value">
+                <span id="lock-center-value">太阳（默认）</span>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 10l5 5 5-5" /></svg>
+              </button>
+            </div>
+            <div id="lock-center-menu" class="center-tree-menu" role="menu" hidden></div>
+          </section>
+          <details id="detail-shell" class="card glass detail-panel" open>
+            <summary id="selected-name">天体数据笔记</summary>
+            <div id="detail-panel" aria-live="polite">
+              <h2>点击任意名称</h2>
+              <p>查看真实半径、质量及周期。</p>
+            </div>
+          </details>
+        </div>
+      </div>
+
+      <div class="bottom-stage">
+        <div class="legend" aria-label="观测状态">
+          <span id="scale-mode"><i class="dot strict"></i>真实半径 · 概览距离压缩</span>
+          <span id="view-mode">概览层 · 轨道距离压缩展示</span>
+          <output id="clock-readout" class="legend-clock" aria-label="星历 UTC 时刻" aria-live="off"></output>
+          <span id="interaction-hint">已锁定太阳 · 滚轮缩放 · 左键平移可解除锁定 · 右键旋转</span>
+        </div>
+        <div class="dock glass" role="toolbar" aria-label="时间与显示控制">
+          <button id="play-toggle" class="dock-icon dock-primary" type="button" aria-pressed="true" aria-label="暂停星历时间">
+            <svg class="icon-pause" viewBox="0 0 24 24" aria-hidden="true"><rect x="6.5" y="5" width="3.6" height="14" rx="1.2" /><rect x="13.9" y="5" width="3.6" height="14" rx="1.2" /></svg>
+            <svg class="icon-play" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5.6v12.8c0 .8.9 1.3 1.6.9l10-6.4c.6-.4.6-1.3 0-1.7l-10-6.4C8.9 4.3 8 4.8 8 5.6z" /></svg>
+          </button>
+          <button id="reset-simulation" class="dock-pill" type="button" title="回到当前 UTC 时间">现在</button>
+          <div class="dock-speed">
+            <label for="speed-control"><span>速度</span><output id="speed-value" for="speed-control">静止</output></label>
+            <input id="speed-control" type="range" min="0" max="180" value="0" step="1" aria-label="仿真速度：最左侧静止、保持当前时刻，向右加速" />
+          </div>
+          <i class="dock-divider" aria-hidden="true"></i>
+          <div id="model-mode" class="segmented" data-mode="real" role="group" aria-label="模型比例">
+            <i class="segmented-thumb" aria-hidden="true"></i>
+            <button id="real-model" type="button" aria-pressed="true">真实比例</button>
+            <button id="enhanced-model" type="button" aria-pressed="false">视觉增强</button>
+          </div>
+          <button id="display-layers-toggle" class="dock-icon" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="图层设置">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l9 5-9 5-9-5 9-5z" /><path d="M3 13l9 5 9-5" /><path d="M3 17l9 5 9-5" /></svg>
+          </button>
+          <button id="clean-view" class="dock-icon" type="button" aria-pressed="false" aria-label="纯净视图" title="纯净视图 · U（Esc 或双击画面恢复）">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" /></svg>
+          </button>
+        </div>
+        <div id="display-layers-menu" class="display-layers-menu glass" role="menu" hidden>
+          <p class="display-layers-heading">图层显示</p>
+          <label class="workspace-setting"><input id="toggle-labels" type="checkbox" checked /><span>天体标签</span></label>
+          <label class="workspace-setting"><input id="toggle-orbits" type="checkbox" checked /><span>轨道线</span></label>
+          <label class="workspace-setting"><input id="toggle-kuiper-belt" type="checkbox" checked /><span>柯伊伯带</span></label>
+          <label class="workspace-setting"><input id="toggle-inner-oort" type="checkbox" checked /><span>内奥尔特云 · 希尔斯云，结构示意</span></label>
+          <label class="workspace-setting"><input id="toggle-outer-oort" type="checkbox" checked /><span>外奥尔特云 · 结构示意</span></label>
+        </div>
+      </div>
+
+      <p id="status-message" role="status" hidden></p>
+      <output id="performance-stats" hidden></output>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

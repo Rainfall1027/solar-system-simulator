@@ -1,0 +1,13 @@
+node_modules/
+web/dist/
+core/.build/
+*.wasm
+*.js.map
+
+# Local credentials and deployment metadata
+.env
+.env.*
+!.env.example
+.vercel/
+.claude/
+*.log

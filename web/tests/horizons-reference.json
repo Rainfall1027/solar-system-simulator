@@ -1,0 +1,14 @@
+{
+  "source": "https://ssd.jpl.nasa.gov/api/horizons.api",
+  "retrieved": "2026-09-21",
+  "apiVersion": "1.2",
+  "utc": "2026-09-21T00:00:00Z",
+  "frame": "Heliocentric J2000 ecliptic / ICRF; geometric, no light-time correction",
+  "parameters": { "CENTER": "500@10", "EPHEM_TYPE": "VECTORS", "REF_PLANE": "ECLIPTIC", "TIME_TYPE": "UT", "OUT_UNITS": "KM-S", "VEC_CORR": "NONE" },
+  "vectorsMetres": [
+    { "id": "mercury", "command": "199", "position": [-34762444001.55024, -59548520674.8686, -1678260486.333404] },
+    { "id": "earth", "command": "399", "position": [150093522264.6596, -6104550994.651439, -264475.6540330127] },
+    { "id": "jupiter", "command": "5", "position": [-513470924637.3397, 604801029339.6936, 8975867762.524277] },
+    { "id": "neptune", "command": "8", "position": [4463890275713.471, 201753086346.79602, -107023607886.2103] }
+  ]
+}

@@ -42,6 +42,13 @@ export function rotationAngle(days: number, periodDays: number): number {
   return ((days % periodDays) / periodDays * TAU + TAU) % TAU;
 }
 
+// Blends two spin angles the short way round (at most half a turn), so a
+// time jump of months shows one gentle turn instead of hundreds of spins.
+export function shortestAngleBlend(start: number, end: number, t: number): number {
+  const delta = ((end - start) % TAU + TAU + Math.PI) % TAU - Math.PI;
+  return start + delta * t;
+}
+
 export function overviewRadius(physicalRadius: number, maxRadius = 180): number {
   return physicalRadius === 0 ? 0 : 18 + 162 * Math.pow(physicalRadius / maxRadius, 0.65);
 }

@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { AU_METRES, BODIES, isSatellite, type BodyDefinition, type BodyId } from './bodies';
-import { distanceToAnnulus, easeInOut, enhancedOrbitRadii, enhancedOverviewRadius, enhancedSatelliteOrbit, facingAngle, formatBeijingTime, fitDistance, focusLimits, overviewRadius, dwellAtApex, flightDurationSeconds, layerLabels, proportionalSatelliteRadius, proximityOpacity, rotationAngle, smoothZoomPath, subpixelDiscScale } from './view-math';
+import { distanceToAnnulus, easeInOut, enhancedOrbitRadii, enhancedOverviewRadius, enhancedSatelliteOrbit, facingAngle, formatBeijingTime, fitDistance, focusLimits, overviewRadius, dwellAtApex, flightDurationSeconds, layerLabels, proportionalSatelliteRadius, proximityOpacity, rotationAngle, shortestAngleBlend, smoothZoomPath, subpixelDiscScale } from './view-math';
 import { DAY_MS, J2000_MS, Ephemeris, SimulationClock, directPosition, sceneAxes } from './ephemeris';
 import { applyMoonShadow, createMoonShadowUniforms, earthClouds, earthNightLights, gasFlow, planetAtmosphere, ringParticles, solarSurface, venusClouds, type EarthCloudEffect, type SurfaceEffect } from './surface-effects';
 import { earthFixedBasis, earthLocalDirection, localEclipseTimeline, lunarEclipseTimeline, type GroundSite, type GroundTarget, type LocalEclipseTimeline } from './eclipse-sky';
@@ -141,20 +141,26 @@ const earthTiltMatrix = new THREE.Matrix4();
 const earthTiltInverse = new THREE.Quaternion();
 let earthOrientationUtc = Number.NaN;
 let earthSpinAngle = 0;
+const earthTiltScratch = new THREE.Quaternion();
+
+/** Writes Earth's pole tilt at utcMs into `tilt` and returns its spin about local +y. */
+function earthOrientationAt(utcMs: number, tilt: THREE.Quaternion): number {
+  const basis = earthFixedBasis(utcMs);
+  earthPole.fromArray(basis.north).normalize();
+  earthTiltAxisA.set(1, 0, 0).addScaledVector(earthPole, -earthPole.x).normalize();
+  earthTiltAxisB.crossVectors(earthTiltAxisA, earthPole);
+  earthTiltMatrix.makeBasis(earthTiltAxisA, earthPole, earthTiltAxisB);
+  tilt.setFromRotationMatrix(earthTiltMatrix);
+  earthTiltInverse.copy(tilt).invert();
+  earthGreenwichLocal.fromArray(basis.greenwich).applyQuaternion(earthTiltInverse);
+  // Ry(angle) carries local +x (longitude 0) to (cos, 0, -sin).
+  return Math.atan2(-earthGreenwichLocal.z, earthGreenwichLocal.x);
+}
 
 function orientEarth(rendered: RenderedBody, utcMs: number): void {
   if (utcMs !== earthOrientationUtc) {
     earthOrientationUtc = utcMs;
-    const basis = earthFixedBasis(utcMs);
-    earthPole.fromArray(basis.north).normalize();
-    earthTiltAxisA.set(1, 0, 0).addScaledVector(earthPole, -earthPole.x).normalize();
-    earthTiltAxisB.crossVectors(earthTiltAxisA, earthPole);
-    earthTiltMatrix.makeBasis(earthTiltAxisA, earthPole, earthTiltAxisB);
-    rendered.model.quaternion.setFromRotationMatrix(earthTiltMatrix);
-    earthTiltInverse.copy(rendered.model.quaternion).invert();
-    earthGreenwichLocal.fromArray(basis.greenwich).applyQuaternion(earthTiltInverse);
-    // Ry(angle) carries local +x (longitude 0) to (cos, 0, -sin).
-    earthSpinAngle = Math.atan2(-earthGreenwichLocal.z, earthGreenwichLocal.x);
+    earthSpinAngle = earthOrientationAt(utcMs, rendered.model.quaternion);
   }
   rendered.surface.rotation.y = earthSpinAngle;
 }
@@ -332,6 +338,13 @@ interface TimeFlight {
   readonly duration: number;
   readonly onLanded?: () => void;
   elapsedSeconds: number;
+  // Eased 0..1 progress of the latest frame.
+  eased: number;
+  // Displayed spin at take-off and the true spin at the target date, per
+  // body. Following the real clock through a jump of months would spin each
+  // globe hundreds of times in under two seconds; instead the spin blends the
+  // short way (at most half a turn) and lands exactly on the true value.
+  readonly spins: Map<BodyId, { readonly start: number; readonly end: number }>;
 }
 type ViewLayer = 'overview' | 'focus';
 const EXPERIENCE_MODES = ['observation', 'experiment', 'wonders'] as const;
@@ -1328,7 +1341,20 @@ function beginTimeFlight(targetUtcMs: number, onLanded?: () => void): void {
     beginCameraTransition('overview', null);
     updateNavigationMode();
   }
-  timeFlight = { startUtcMs, endUtcMs: targetUtcMs, duration: timeFlightDurationSeconds(span), onLanded, elapsedSeconds: 0 };
+  const targetDays = (targetUtcMs - J2000_MS) / DAY_MS;
+  const spins = new Map<BodyId, { start: number; end: number }>();
+  for (const body of BODIES) {
+    // Synchronous satellites face their parent, so their spin already follows
+    // their (smooth) orbital motion.
+    if (body.parentId && body.rotationPeriodDays === body.periodDays) continue;
+    const rendered = renderedBodies.get(body.id);
+    if (!rendered) continue;
+    const end = body.id === 'earth'
+      ? earthOrientationAt(targetUtcMs, earthTiltScratch)
+      : rotationAngle(targetDays, body.rotationPeriodDays);
+    spins.set(body.id, { start: rendered.surface.rotation.y, end });
+  }
+  timeFlight = { startUtcMs, endUtcMs: targetUtcMs, duration: timeFlightDurationSeconds(span), onLanded, elapsedSeconds: 0, eased: 0, spins };
 }
 
 function updateTimeFlight(elapsedSeconds: number): void {
@@ -1336,7 +1362,8 @@ function updateTimeFlight(elapsedSeconds: number): void {
   const flight = timeFlight;
   flight.elapsedSeconds += elapsedSeconds;
   const progress = THREE.MathUtils.clamp(flight.elapsedSeconds / flight.duration, 0, 1);
-  simulationClock.utcMs = flight.startUtcMs + (flight.endUtcMs - flight.startUtcMs) * easeInOut(progress);
+  flight.eased = easeInOut(progress);
+  simulationClock.utcMs = flight.startUtcMs + (flight.endUtcMs - flight.startUtcMs) * flight.eased;
   simulationDays = (simulationClock.utcMs - J2000_MS) / DAY_MS;
   updateOrbitalPositions();
   // The UTC/coordinate readout follows the render loop's usual 250ms-throttled
@@ -2160,10 +2187,14 @@ function activateWonder(wonder: WonderDefinition): void {
     beginTimeFlight(startMs, () => {
       if (groundRequest !== request) return;
       groundRequest = null;
+      // Already settled on Earth (e.g. switching between eclipses): the camera
+      // turned with the globe through the jump, so descend straight away in
+      // one great-circle move instead of pausing first.
+      const settled = viewLayer === 'focus' && focusedBodyId === 'earth' && !focusTransition;
       focusBody(bodyById.get('earth')!);
       groundView = {
         site, timeline, wonderName: wonder.name, event, target: wonder.groundTarget!, startMs,
-        phase: 'approach', elapsed: 0, sky: null,
+        phase: 'approach', elapsed: settled ? Number.POSITIVE_INFINITY : 0, sky: null,
         startDirection: new THREE.Vector3(), endDirection: new THREE.Vector3(), rotation: new THREE.Quaternion(),
         startDistance: 1, endDistance: 1, rate: event === 'solar-eclipse' ? GROUND_DEFAULT_RATE : 120,
       };
@@ -2710,6 +2741,37 @@ function switchModelMode(enabled: boolean): void {
 appEnhancedModel.addEventListener('click', () => switchModelMode(true), eventOptions);
 appRealModel.addEventListener('click', () => switchModelMode(false), eventOptions);
 
+// During a time jump while looking at Earth, the camera turns with the globe,
+// so the ground under it holds still and only the day/night terminator sweeps
+// across, rather than the planet spinning away beneath a fixed camera and
+// leaving it over the night side.
+const earthFrame = new THREE.Quaternion();
+const earthFramePrevious = new THREE.Quaternion();
+const earthFrameDelta = new THREE.Quaternion();
+const earthSpinQuaternion = new THREE.Quaternion();
+const earthCameraOffset = new THREE.Vector3();
+const EARTH_SPIN_AXIS = new THREE.Vector3(0, 1, 0);
+let earthFrameTracked = false;
+
+function followEarthSpin(): void {
+  const earth = renderedBodies.get('earth');
+  const following = Boolean(timeFlight) && viewLayer === 'focus' && focusedBodyId === 'earth'
+    && !focusTransition && !(groundView && groundView.phase !== 'approach') && Boolean(earth?.model.visible);
+  if (!following || !earth) {
+    earthFrameTracked = false;
+    return;
+  }
+  earthSpinQuaternion.setFromAxisAngle(EARTH_SPIN_AXIS, earth.surface.rotation.y);
+  earthFrame.copy(earth.model.quaternion).multiply(earthSpinQuaternion);
+  if (earthFrameTracked) {
+    earthFrameDelta.copy(earthFramePrevious).invert().premultiply(earthFrame);
+    earthCameraOffset.copy(camera.position).sub(controls.target).applyQuaternion(earthFrameDelta);
+    camera.position.copy(controls.target).add(earthCameraOffset);
+  }
+  earthFramePrevious.copy(earthFrame);
+  earthFrameTracked = true;
+}
+
 function render(now: number): void {
   const started = performance.now();
   const elapsedSeconds = lastFrameTime === null ? 0 : (now - lastFrameTime) / 1000;
@@ -2751,7 +2813,10 @@ function render(now: number): void {
     } else {
       rendered.surface.rotation.y = rotationAngle(simulationDays, body.rotationPeriodDays);
     }
+    const spin = timeFlight?.spins.get(body.id);
+    if (spin) rendered.surface.rotation.y = shortestAngleBlend(spin.start, spin.end, timeFlight!.eased);
   }
+  if (!onGround) followEarthSpin();
   const groundScene = stepGround(elapsedSeconds);
   const groundSky = groundView?.sky;
   if (groundScene && groundView && groundSky) {

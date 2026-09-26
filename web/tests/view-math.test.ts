@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { BODIES, AU_METRES } from '../src/bodies.ts';
-import { rotationAngle, facingAngle, overviewRadius, enhancedOverviewRadius, enhancedOrbitRadii, enhancedSatelliteOrbit, formatBeijingTime, ENHANCED_PLANET_AU, proportionalSatelliteRadius, fitDistance, focusLimits, smoothZoomPath, dwellAtApex, flightDurationSeconds, easeInOut, layerLabels, distanceToAnnulus, proximityOpacity, subpixelDiscScale, TAU } from '../src/view-math.ts';
+import { rotationAngle, facingAngle, overviewRadius, enhancedOverviewRadius, enhancedOrbitRadii, enhancedSatelliteOrbit, formatBeijingTime, ENHANCED_PLANET_AU, proportionalSatelliteRadius, fitDistance, focusLimits, smoothZoomPath, dwellAtApex, flightDurationSeconds, easeInOut, layerLabels, distanceToAnnulus, proximityOpacity, subpixelDiscScale, shortestAngleBlend, TAU } from '../src/view-math.ts';
 
 test('subpixel real-scale discs fade away instead of leaving a bright point', () => {
   assert.equal(subpixelDiscScale(0.1), 0);
@@ -180,4 +180,19 @@ test('eased flight time starts and ends at rest', () => {
   assert.equal(easeInOut(0), 0);
   assert.equal(easeInOut(1), 1);
   assert.ok(easeInOut(0.01) < 1e-4 && 1 - easeInOut(0.99) < 1e-4);
+});
+
+test('time-jump spin blends the short way round', () => {
+  assert.ok(Math.abs(shortestAngleBlend(0.1, 3.2, 1) - 3.2) < 1e-12);
+  // 6.0 -> 0.2 crosses zero forwards, not 5.8 rad backwards.
+  assert.ok(Math.abs(shortestAngleBlend(6.0, 0.2, 1) - (0.2 + TAU)) < 1e-12);
+  assert.ok(Math.abs(shortestAngleBlend(6.0, 0.2, 0.5) - (6.0 + (0.2 + TAU - 6.0) / 2)) < 1e-12);
+  assert.equal(shortestAngleBlend(1.5, 99, 0), 1.5);
+  for (let i = 0; i < 50; i += 1) {
+    const a = i * 0.77 - 10;
+    const b = i * 1.93 + 4;
+    const end = shortestAngleBlend(a, b, 1);
+    assert.ok(Math.abs(end - a) <= Math.PI + 1e-12);
+    assert.ok(Math.abs(Math.cos(end) - Math.cos(b)) < 1e-9 && Math.abs(Math.sin(end) - Math.sin(b)) < 1e-9);
+  }
 });

@@ -1,6 +1,6 @@
 # GitHub → Vercel 自动部署
 
-- GitHub：`Rainfall1027/solar-system-stimulator`
+- GitHub：`Rainfall1027/solar-system-simulator`
 - Vercel 工作空间：`ylcc1`；项目：`solar-system-stimulator`
 - `main` 推送触发 Production；其他分支推送与 Pull Request 触发 Preview。
 - 构建根目录为仓库根目录，Node.js 24.x，`npm ci` → `npm run build`，输出 `web/dist`。

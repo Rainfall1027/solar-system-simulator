@@ -26,6 +26,13 @@ function createHarness() {
   canvas.width = 640;
   canvas.height = 400;
   stage.append(canvas);
+  const labelLayer = document.createElement('div');
+  const label = document.createElement('button');
+  const labelText = document.createElement('span');
+  labelText.textContent = '地球';
+  label.append(labelText);
+  labelLayer.append(label);
+  stage.append(labelLayer);
   const camera = new THREE.PerspectiveCamera(45, 640 / 400, 0.01, 1000);
   camera.position.set(0, 0, 100);
   const controls = new OrbitControls(camera, canvas);
@@ -38,6 +45,7 @@ function createHarness() {
   let groundZoom = 0;
   let zoomCalls = 0;
   let panCalls = 0;
+  const groundDrag: number[][] = [];
   bindTrackpadInput(canvas, {
     mode: () => mode,
     zoom: (delta, source) => {
@@ -45,21 +53,25 @@ function createHarness() {
       if (mode === 'ground') groundZoom += delta;
       else dispatchOrbitZoom(canvas, delta, source);
     },
-    rotate: (dx, dy) => rotateTrackpadCamera(camera, controls, dx, dy, canvas.clientHeight),
+    rotate: (dx, dy) => {
+      if (mode === 'ground') groundDrag.push([dx, dy]);
+      else rotateTrackpadCamera(camera, controls, dx, dy, canvas.clientHeight);
+    },
     pan: (dx, dy) => {
       panCalls++;
       panTrackpadCamera(camera, controls, dx, dy, canvas.clientHeight);
     },
-  }, abort.signal);
+  }, abort.signal, [labelLayer]);
   return {
-    canvas, camera, controls, abort,
+    canvas, camera, controls, abort, label, labelText,
     get mode() { return mode; },
     set mode(value: NavigationMode) { mode = value; },
     get groundZoom() { return groundZoom; },
     get zoomCalls() { return zoomCalls; },
     get panCalls() { return panCalls; },
+    groundDrag,
     distance: () => camera.position.distanceTo(controls.target),
-    dispose: () => { abort.abort(); controls.dispose(); canvas.remove(); },
+    dispose: () => { abort.abort(); controls.dispose(); canvas.remove(); labelLayer.remove(); },
   };
 }
 
@@ -103,12 +115,16 @@ async function run(name: string, body: (h: Harness) => void | Promise<void>): Pr
 
 const orbitFactor = (delta: number) => Math.pow(0.95, -0.72 * delta / 100);
 
-await run('纵向滚动仅缩放一次，幅度与 OrbitControls 一致', h => {
+await run('纵向双指拖移只旋转，距离和目标保持不变', h => {
   const before = h.distance();
-  const event = wheel(h.canvas, 0, 80);
+  const position = h.camera.position.clone();
+  const target = h.controls.target.clone();
+  const event = wheel(h.canvas, 0, 30);
   check(event.defaultPrevented, '画布滚动未阻止页面默认行为');
-  check(h.zoomCalls === 1, `缩放回调次数为 ${h.zoomCalls}`);
-  close(h.distance() / before, orbitFactor(80), '缩放倍率');
+  check(h.zoomCalls === 0, '纵向拖移不应调用缩放');
+  check(h.camera.position.distanceTo(position) > 0.01, '纵向拖移没有旋转');
+  check(h.controls.target.distanceTo(target) < 1e-8, '旋转改变了目标');
+  close(h.distance(), before, '纵向旋转距离');
 });
 
 await run('浏览器 Ctrl 捏合按十倍增益缩放一次', h => {
@@ -118,19 +134,21 @@ await run('浏览器 Ctrl 捏合按十倍增益缩放一次', h => {
   close(h.distance() / before, orbitFactor(-50), '捏合倍率');
 });
 
-await run('真实 Ctrl 按键不触发捏合增益', h => {
+await run('真实 Ctrl 按键不会把双指拖移当成捏合', h => {
   document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Control', bubbles: true }));
   const before = h.distance();
   wheel(h.canvas, 0, -5, { ctrlKey: true });
   document.dispatchEvent(new KeyboardEvent('keyup', { key: 'Control', bubbles: true }));
-  close(h.distance() / before, orbitFactor(-5), '真实 Ctrl 的缩放倍率');
+  check(h.zoomCalls === 0, '真实 Ctrl 不应识别为捏合');
+  close(h.distance(), before, '真实 Ctrl 拖移后的距离');
 });
 
-await run('横向滚动只旋转，相机目标和距离不变', h => {
+await run('斜向双指拖移同时旋转两个方向，相机目标和距离不变', h => {
   const before = h.distance();
   const target = h.controls.target.clone();
   wheel(h.canvas, 24, 2);
-  check(Math.abs(h.camera.position.x) > 0.01, '相机没有旋转');
+  check(Math.abs(h.camera.position.x) > 0.01, '相机没有水平旋转');
+  check(Math.abs(h.camera.position.y) > 0.01, '相机没有垂直旋转');
   close(h.distance(), before, '旋转后的距离');
   check(h.controls.target.distanceTo(target) < 1e-8, '旋转改变了目标');
   check(h.zoomCalls === 0, '横向滚动触发了缩放');
@@ -157,11 +175,14 @@ await run('近景禁止平移', h => {
   check(h.camera.position.distanceTo(before) < 1e-8, '近景相机移动了');
 });
 
-await run('地面视角接收归一化滚动而不驱动 OrbitControls', h => {
+await run('天空视角双指拖移调整方向，只有捏合缩放', h => {
   h.mode = 'ground';
   const before = h.distance();
   wheel(h.canvas, 0, 2, { deltaMode: 1 });
-  check(h.groundZoom === 32, `地面视角收到 ${h.groundZoom}，预期 32`);
+  check(h.groundZoom === 0, '天空纵向拖移不应缩放');
+  check(h.groundDrag.length === 1 && h.groundDrag[0][1] === 32, '天空纵向拖移未归一化');
+  wheel(h.canvas, 0, 2, { deltaMode: 1, ctrlKey: true });
+  check(Number(h.groundZoom) === 300, '天空捏合缩放未按增益和限幅处理');
   close(h.distance(), before, '地面视角相机距离');
 });
 
@@ -224,6 +245,57 @@ await run('侧栏滚动不被画布监听器拦截', h => {
   } finally {
     sidebar.remove();
   }
+});
+
+await run('光标经过标签及其子元素时，二维旋转保持连续且不触发点击', h => {
+  const target = h.controls.target.clone();
+  const distance = h.distance();
+  let clicks = 0;
+  h.label.addEventListener('click', () => { clicks++; });
+  for (const surface of [h.canvas, h.label, h.labelText, h.canvas]) {
+    const before = h.camera.position.clone();
+    const event = wheel(surface, 12, 7);
+    check(event.defaultPrevented, '标签上的手势未被处理');
+    check(h.camera.position.distanceTo(before) > 0.01, '经过标签后旋转中断');
+    close(h.distance(), distance, '标签旋转不应改变距离');
+    check(h.controls.target.distanceTo(target) < 1e-8, '标签旋转改变了中心');
+  }
+  check(h.zoomCalls === 0 && clicks === 0, '标签拖移误触发缩放或点击');
+  h.label.click();
+  check(Number(clicks) === 1, '标签点击功能被拦截');
+});
+
+await run('标签上的捏合与 Shift 平移沿用画布逻辑', h => {
+  const distance = h.distance();
+  wheel(h.labelText, 0, -5, { ctrlKey: true });
+  check(h.zoomCalls === 1, '标签捏合未处理或重复缩放');
+  close(h.distance() / distance, orbitFactor(-50), '标签捏合倍率');
+  wheel(h.label, 10, 8, { shiftKey: true });
+  check(h.panCalls === 1, '标签上的 Shift 平移被阻断');
+  h.mode = 'blocked';
+  const before = h.camera.position.clone();
+  check(wheel(h.label, 5, 5).defaultPrevented, '转场时标签未阻止默认手势');
+  check(h.camera.position.distanceTo(before) < 1e-8, '标签绕过了转场输入限制');
+});
+
+await run('Safari 捏合跨越画布和标签时共享去重状态', h => {
+  const distance = h.distance();
+  gesture(h.canvas, 'gesturestart', 1);
+  gesture(h.labelText, 'gesturechange', 1.05);
+  wheel(h.label, 0, -2, { ctrlKey: true });
+  check(h.zoomCalls === 1, '标签的 Safari 捏合被漏掉或重复处理');
+  gesture(h.canvas, 'gesturechange', 1.1025);
+  close(h.distance() / distance, 1 / 1.1025, '跨标签捏合倍率', 1e-6);
+  gesture(h.label, 'gestureend', 1.1025);
+  const before = h.camera.position.clone();
+  wheel(h.canvas, 10, 0);
+  check(h.camera.position.distanceTo(before) > 0.01, '标签上结束捏合后旋转仍被阻塞');
+});
+
+await run('Abort 同时移除标签层的输入监听', h => {
+  h.abort.abort();
+  check(!wheel(h.labelText, 10, 5).defaultPrevented, '标签层的监听没有清理');
+  check(h.zoomCalls === 0 && h.panCalls === 0, '清理后仍处理标签手势');
 });
 
 summary.textContent = `${passed} 项通过，${failed} 项失败`;

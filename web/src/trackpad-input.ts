@@ -46,14 +46,12 @@ export function normalizeWheel(input: WheelInput, controlPressed = false): { x: 
   };
 }
 
-/** 捏合、修饰键和水平主导的手势按固定优先级分类。 */
+/** 仅捏合缩放；Shift 平移；其余双指滑动沿两个方向旋转。 */
 export function classifyWheel(input: WheelInput, controlPressed = false): WheelAction {
-  const { x, y } = normalizeWheel(input, controlPressed);
-  if (input.ctrlKey) return y === 0 ? { kind: 'none', x: 0, y: 0 } : { kind: 'zoom', x: 0, y: clampZoom(y) };
+  const { x, y, pinch } = normalizeWheel(input, controlPressed);
+  if (pinch) return y === 0 ? { kind: 'none', x: 0, y: 0 } : { kind: 'zoom', x: 0, y: clampZoom(y) };
   if (input.shiftKey) return x === 0 && y === 0 ? { kind: 'none', x: 0, y: 0 } : { kind: 'pan', x, y };
-  if (input.altKey) return x === 0 && y === 0 ? { kind: 'none', x: 0, y: 0 } : { kind: 'rotate', x, y };
-  if (Math.abs(x) > Math.abs(y) * 1.25) return { kind: 'rotate', x, y: 0 };
-  return y === 0 ? { kind: 'none', x: 0, y: 0 } : { kind: 'zoom', x: 0, y: clampZoom(y) };
+  return x === 0 && y === 0 ? { kind: 'none', x: 0, y: 0 } : { kind: 'rotate', x, y };
 }
 
 /** 将已归一化的缩放交给 OrbitControls，复用其中心、限距和阻尼逻辑。 */
@@ -79,8 +77,8 @@ export function dispatchOrbitZoom(element: HTMLElement, delta: number, source: W
 
 type ScaleGesture = Event & { scale?: number; clientX?: number; clientY?: number };
 
-/** 只接管指定画布上的滚轮和 Safari 手势；所有监听随 signal 一起移除。 */
-export function bindTrackpadInput(element: HTMLElement, options: InputOptions, signal: AbortSignal): void {
+/** 画布与标签覆盖层共用手势状态；不拦截点击或画布外的界面操作。 */
+export function bindTrackpadInput(element: HTMLElement, options: InputOptions, signal: AbortSignal, overlays: readonly HTMLElement[] = []): void {
   const pointers = new Map<number, string>();
   let controlPressed = false;
   let gestureScale: number | null = null;
@@ -167,18 +165,20 @@ export function bindTrackpadInput(element: HTMLElement, options: InputOptions, s
     if (wasActive && !touchActive) suppressPinchWheelUntil = performance.now() + 80;
   };
 
-  element.addEventListener('wheel', onWheel, { capture: true, passive: false, signal });
-  element.addEventListener('gesturestart', onGestureStart, { capture: true, passive: false, signal });
-  element.addEventListener('gesturechange', onGestureChange, { capture: true, passive: false, signal });
-  element.addEventListener('gestureend', onGestureEnd, { capture: true, passive: false, signal });
-  element.addEventListener('pointerdown', event => {
-    pointers.set(event.pointerId, event.pointerType);
-    gestureActive = false;
-    gestureScale = null;
-  }, { capture: true, signal });
+  for (const surface of new Set([element, ...overlays])) {
+    surface.addEventListener('wheel', onWheel, { capture: true, passive: false, signal });
+    surface.addEventListener('gesturestart', onGestureStart, { capture: true, passive: false, signal });
+    surface.addEventListener('gesturechange', onGestureChange, { capture: true, passive: false, signal });
+    surface.addEventListener('gestureend', onGestureEnd, { capture: true, passive: false, signal });
+    surface.addEventListener('pointerdown', event => {
+      pointers.set(event.pointerId, event.pointerType);
+      gestureActive = false;
+      gestureScale = null;
+    }, { capture: true, signal });
+    surface.addEventListener('lostpointercapture', event => pointers.delete(event.pointerId), { capture: true, signal });
+  }
   window.addEventListener('pointerup', event => pointers.delete(event.pointerId), { capture: true, signal });
   window.addEventListener('pointercancel', event => pointers.delete(event.pointerId), { capture: true, signal });
-  element.addEventListener('lostpointercapture', event => pointers.delete(event.pointerId), { capture: true, signal });
   document.addEventListener('keydown', event => { if (event.key === 'Control') controlPressed = true; }, { capture: true, signal });
   document.addEventListener('keyup', event => { if (event.key === 'Control') controlPressed = false; }, { capture: true, signal });
   window.addEventListener('blur', () => {

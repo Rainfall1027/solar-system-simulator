@@ -410,9 +410,6 @@ let cleanMode = false;
 let orbitsVisible = true;
 let labelsVisible = true;
 let activeExperience: ExperienceMode = 'observation';
-// The scope switch's second side ("太阳系 | <body>") targets whichever body
-// was last visited, so it stays useful once the overview lock is off Sun/free.
-let lastViewedBodyId: BodyId = 'earth';
 let activeWonderId: string | null = null;
 let bodySearchQuery = '';
 let kuiperBeltVisible = true;
@@ -788,27 +785,24 @@ function updateNavigationMode(): void {
   }
   const lockedName = overviewLockBodyId === 'free' ? '' : bodyById.get(overviewLockBodyId)!.name;
   interactionHint.textContent = viewLayer === 'focus'
-    ? '近景锁定中心 · 双指左右滑动/右键旋转 · 上下滑动/捏合缩放 · Esc 返回'
+    ? '近景锁定中心 · 双指拖移/右键旋转 · 双指捏合缩放 · Esc 返回'
     : overviewLockBodyId !== 'free'
-      ? `已锁定${lockedName} · 双指上下/捏合缩放 · 左右旋转 · Shift＋滑动/左键平移解锁`
-      : '自由浏览 · 双指上下/捏合缩放 · 左右旋转 · Shift＋滑动/左键平移';
-  interactionHint.title = '鼠标：滚轮缩放，右键拖动旋转，左键拖动平移。触控板：双指上下滑动或捏合缩放，左右滑动旋转；按住 Alt（Mac 为 Option）滑动可上下左右旋转；概览中 Shift＋双指滑动平移并解除中心锁定。';
+      ? `已锁定${lockedName} · 双指捏合缩放 · 双指拖移旋转 · Shift＋滑动/左键平移解锁`
+      : '自由浏览 · 双指捏合缩放 · 双指拖移旋转 · Shift＋滑动/左键平移';
+  interactionHint.title = '触控板：双指捏合缩放，双指拖移上下左右旋转；概览中 Shift＋双指拖移平移并解除中心锁定。鼠标：中键拖动缩放，右键拖动旋转，左键拖动平移。';
   updateScopeSwitch();
 }
 
-// The body the scope switch's second side names and would focus: the
-// close-up target when already in one, else the overview lock (skipping the
-// Sun/free defaults, which the "太阳系" side already covers), else the last
-// body actually visited.
-function scopeFocusTargetId(): BodyId {
+// 顶部近景入口始终对应当前视角中心；自由浏览没有可聚焦的中心天体。
+function scopeFocusTargetId(): BodyId | null {
   if (viewLayer === 'focus' && focusedBodyId) return focusedBodyId;
-  if (overviewLockBodyId !== 'free' && overviewLockBodyId !== 'sun') return overviewLockBodyId;
-  return lastViewedBodyId;
+  return overviewLockBodyId === 'free' ? null : overviewLockBodyId;
 }
 
 function updateScopeSwitch(): void {
   if (activeExperience === 'wonders') {
     const showingWonder = activeWonderId !== null;
+    scopeFocusButton.disabled = false;
     scopeFocusButton.textContent = activeOrDefaultWonder().name;
     scopeOverviewButton.setAttribute('aria-pressed', String(!showingWonder));
     scopeFocusButton.setAttribute('aria-pressed', String(showingWonder));
@@ -816,7 +810,9 @@ function updateScopeSwitch(): void {
     return;
   }
   const inFocus = viewLayer === 'focus';
-  scopeFocusButton.textContent = bodyById.get(scopeFocusTargetId())!.name;
+  const targetId = scopeFocusTargetId();
+  scopeFocusButton.textContent = targetId ? bodyById.get(targetId)!.name : '自由浏览';
+  scopeFocusButton.disabled = targetId === null;
   scopeOverviewButton.setAttribute('aria-pressed', String(!inFocus));
   scopeFocusButton.setAttribute('aria-pressed', String(inFocus));
   scopeSwitch.dataset.mode = inFocus ? 'focus' : 'overview';
@@ -972,7 +968,6 @@ function focusBody(body: BodyDefinition): void {
   // label focus, so leaving the close-up returns centred on this body.
   beginCameraTransition('focus', body.id);
   if (!enhancedModelsEnabled) overviewLockBodyId = body.id;
-  lastViewedBodyId = body.id;
   updateNavigationMode();
 }
 
@@ -1923,7 +1918,7 @@ function buildGroundHud(view: GroundView): void {
       <button type="button" data-ground-action="recentre">回正</button>
         <button type="button" data-ground-action="leave">离开</button>
     </div>
-    <p class="ground-hud-hint">拖动/双指左右微调 · 上下滑动/捏合缩放 · Esc 离开</p>`;
+    <p class="ground-hud-hint">拖动/双指拖移微调 · 双指捏合缩放 · Esc 离开</p>`;
   const field = (name: string) => groundHud.querySelector<HTMLElement>(`[data-ground="${name}"]`)!;
   groundFields = {
     time: field('time'), coverage: field('coverage'), altitude: field('altitude'),
@@ -2553,7 +2548,8 @@ scopeFocusButton.addEventListener('click', () => {
     activateWonder(activeOrDefaultWonder());
     return;
   }
-  const body = bodyById.get(scopeFocusTargetId());
+  const targetId = scopeFocusTargetId();
+  const body = targetId ? bodyById.get(targetId) : undefined;
   if (body) focusBody(body);
 }, eventOptions);
 
@@ -2659,7 +2655,7 @@ bindTrackpadInput(renderer.domElement, {
     panTrackpadCamera(camera, controls, dx, dy, appViewport.clientHeight);
     overviewTarget.copy(controls.target);
   },
-}, abortEvents.signal);
+}, abortEvents.signal, [labelLayer]);
 
 appLockCenter.addEventListener('click', () => {
   if (appLockCenter.disabled) return;

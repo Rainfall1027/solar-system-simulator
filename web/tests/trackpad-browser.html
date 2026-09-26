@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>触控板浏览器测试 · 运行中</title>
+  <style>
+    body { margin: 24px; font: 15px/1.6 system-ui, sans-serif; background: #111827; color: #f9fafb; }
+    #results { padding-left: 24px; }
+    li { margin: 8px 0; }
+    .pass { color: #86efac; }
+    .fail { color: #fca5a5; white-space: pre-wrap; }
+    #stage { position: absolute; left: -10000px; top: 0; }
+    #stage canvas { display: block; width: 640px; height: 400px; touch-action: none; }
+  </style>
+</head>
+<body>
+  <h1>触控板浏览器集成测试</h1>
+  <p id="summary">正在运行……</p>
+  <ol id="results"></ol>
+  <div id="stage"></div>
+  <script type="module" src="./trackpad-browser.ts"></script>
+</body>
+</html>

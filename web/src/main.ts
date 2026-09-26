@@ -1,5 +1,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { bindTrackpadInput, dispatchOrbitZoom } from './trackpad-input';
+import { panTrackpadCamera, rotateTrackpadCamera } from './trackpad-camera';
 import { AU_METRES, BODIES, isSatellite, type BodyDefinition, type BodyId } from './bodies';
 import { distanceToAnnulus, easeInOut, enhancedOrbitRadii, enhancedOverviewRadius, enhancedSatelliteOrbit, facingAngle, formatBeijingTime, fitDistance, focusLimits, overviewRadius, dwellAtApex, flightDurationSeconds, layerLabels, proportionalSatelliteRadius, proximityOpacity, rotationAngle, shortestAngleBlend, smoothZoomPath, subpixelDiscScale } from './view-math';
 import { DAY_MS, J2000_MS, Ephemeris, SimulationClock, directPosition, sceneAxes } from './ephemeris';
@@ -680,7 +682,7 @@ function updateOverviewClipPlanes(): void {
 }
 
 function viewModeText(): string {
-  if (viewLayer === 'focus') return '行星近景层 · 向外滚轮可返回概览';
+  if (viewLayer === 'focus') return '行星近景层 · 持续缩小可返回概览';
   if (enhancedModelsEnabled) return orbitsVisible ? '视觉增强 · 星历方位 / 扩展间距' : '视觉增强 · 轨道已隐藏';
   return orbitsVisible ? '概览层 · 轨道距离压缩展示' : '概览层 · 轨道已隐藏';
 }
@@ -786,10 +788,11 @@ function updateNavigationMode(): void {
   }
   const lockedName = overviewLockBodyId === 'free' ? '' : bodyById.get(overviewLockBodyId)!.name;
   interactionHint.textContent = viewLayer === 'focus'
-    ? '近景已锁定中心 · 右键旋转 · 滚轮缩放 · Esc 返回'
+    ? '近景锁定中心 · 双指左右滑动/右键旋转 · 上下滑动/捏合缩放 · Esc 返回'
     : overviewLockBodyId !== 'free'
-      ? `已锁定${lockedName} · 滚轮以其为中心缩放 · 左键平移可解除锁定 · 右键旋转`
-      : '自由浏览 · 左键平移 · 右键旋转 · 滚轮无级缩放';
+      ? `已锁定${lockedName} · 双指上下/捏合缩放 · 左右旋转 · Shift＋滑动/左键平移解锁`
+      : '自由浏览 · 双指上下/捏合缩放 · 左右旋转 · Shift＋滑动/左键平移';
+  interactionHint.title = '鼠标：滚轮缩放，右键拖动旋转，左键拖动平移。触控板：双指上下滑动或捏合缩放，左右滑动旋转；按住 Alt（Mac 为 Option）滑动可上下左右旋转；概览中 Shift＋双指滑动平移并解除中心锁定。';
   updateScopeSwitch();
 }
 
@@ -1920,7 +1923,7 @@ function buildGroundHud(view: GroundView): void {
       <button type="button" data-ground-action="recentre">回正</button>
         <button type="button" data-ground-action="leave">离开</button>
     </div>
-    <p class="ground-hud-hint">拖动微调视角 · 滚轮缩放 · Esc 离开</p>`;
+    <p class="ground-hud-hint">拖动/双指左右微调 · 上下滑动/捏合缩放 · Esc 离开</p>`;
   const field = (name: string) => groundHud.querySelector<HTMLElement>(`[data-ground="${name}"]`)!;
   groundFields = {
     time: field('time'), coverage: field('coverage'), altitude: field('altitude'),
@@ -2618,13 +2621,45 @@ appCleanView.addEventListener('click', () => {
   setCleanView(!cleanMode);
 }, eventOptions);
 
-renderer.domElement.addEventListener('wheel', (event) => {
-  if (groundView) {
-    if (groundView.phase === 'ground') groundView.sky!.zoom(event.deltaY);
-    return;
-  }
-  if (viewLayer === 'focus' && !focusTransition) outwardZoomRequested = event.deltaY > 0;
-}, { passive: true, capture: true, ...eventOptions });
+function releaseOverviewLock(): void {
+  if (viewLayer !== 'overview' || overviewLockBodyId === 'free') return;
+  overviewLockBodyId = 'free';
+  overviewTarget.copy(controls.target);
+  configureCamera();
+  updateNavigationMode();
+}
+
+bindTrackpadInput(renderer.domElement, {
+  mode: () => {
+    if (groundView) return groundView.phase === 'ground' ? 'ground' : 'blocked';
+    return focusTransition || !controls.enabled ? 'blocked' : viewLayer;
+  },
+  zoom: (delta, event) => {
+    if (groundView?.phase === 'ground') {
+      groundView.sky!.zoom(delta);
+      return;
+    }
+    if (viewLayer === 'focus') outwardZoomRequested = delta > 0;
+    // 统一输入单位后复用 OrbitControls 的限距、光标缩放和事件通知。
+    dispatchOrbitZoom(renderer.domElement, delta, event);
+  },
+  rotate: (dx, dy) => {
+    if (groundView?.phase === 'ground') {
+      groundView.sky!.drag(-dx, -dy, appViewport.clientHeight);
+      return;
+    }
+    rotateTrackpadCamera(camera, controls, dx, dy, appViewport.clientHeight);
+  },
+  pan: (dx, dy) => {
+    if (groundView?.phase === 'ground') {
+      groundView.sky!.drag(-dx, -dy, appViewport.clientHeight);
+      return;
+    }
+    releaseOverviewLock();
+    panTrackpadCamera(camera, controls, dx, dy, appViewport.clientHeight);
+    overviewTarget.copy(controls.target);
+  },
+}, abortEvents.signal);
 
 appLockCenter.addEventListener('click', () => {
   if (appLockCenter.disabled) return;
@@ -2672,10 +2707,7 @@ renderer.domElement.addEventListener('pointermove', event => {
   if (event.pointerType === 'touch') return;
   if (!pointerStart || !(event.buttons & 1) || viewLayer !== 'overview' || focusTransition || overviewLockBodyId === 'free') return;
   if (Math.hypot(event.clientX - pointerStart.x, event.clientY - pointerStart.y) <= 3) return;
-  overviewLockBodyId = 'free';
-  overviewTarget.copy(controls.target);
-  configureCamera();
-  updateNavigationMode();
+  releaseOverviewLock();
 }, eventOptions);
 renderer.domElement.addEventListener('pointercancel', () => {
   pointerStart = null;
